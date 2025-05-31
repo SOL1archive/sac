@@ -1,0 +1,17 @@
+from dataclasses import dataclass
+
+@dataclass
+class TrainConfig:
+    env_name: str = 'Walker2d-v5' # 논문에서는 v1이 사용되었으나 deprecated되어 v4 사용.
+
+    alpha: float = 0.2
+    reward_scale: float = 10.
+    eval_num_episodes: int = 5
+    tau: float = 0.001
+    learning_rate: float = 3e-4
+    discount_rate: float = 0.99
+    replay_buffer_size: int = 1e5
+    num_layers: int = 2
+    hidden_dim: int = 256
+    batch_size: int = 256
+    num_episodes: int = 10_000

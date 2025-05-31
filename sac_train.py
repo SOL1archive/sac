@@ -1,0 +1,223 @@
+from pprint import pprint
+from icecream import ic
+
+from tqdm.auto import trange
+import numpy as np
+import pandas as pd
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import gymnasium as gym
+from gymnasium.wrappers.transform_reward import TransformReward
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from torch.optim import Adam
+
+from train_config import TrainConfig
+from utils import ReplayBuffer, get_flattened_shape
+from models import PolicyNet, SoftQNet, SoftVNet
+
+class Trainer:
+    def __init__(self, config: TrainConfig, device=None):
+        self.config = config
+        if device is not None:
+            pass
+        elif torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
+        self.device = device
+        
+        self.env = gym.make(config.env_name)
+        self.env = TransformReward(self.env, lambda r: self.config.reward_scale * r)
+
+        self.replay_buffer = ReplayBuffer(
+            max_size=config.replay_buffer_size,
+            obs_space_dim=self.env.observation_space.shape,
+            action_dim=self.env.action_space.shape,
+            device=torch.device('cuda'),
+        )
+        
+        obs_dim = get_flattened_shape(self.env.observation_space.shape)
+        action_dim = get_flattened_shape(self.env.action_space.shape)
+
+        self.policy = PolicyNet(
+            obs_dim=obs_dim,
+            hidden_dim=config.hidden_dim,
+            num_layers=config.num_layers,
+            action_dim=action_dim,
+        ).to(self.device)
+        self.policy_optimizer = Adam(self.policy.parameters(), lr=config.learning_rate)
+    
+        self.soft_q_lt = []
+        for _ in range(2):
+            soft_q = SoftQNet(
+                obs_dim=obs_dim,
+                hidden_dim=config.hidden_dim,
+                num_layers=config.num_layers,
+                action_dim=action_dim,
+            ).to(self.device)
+            soft_q_optimizer = Adam(soft_q.parameters(), lr=config.learning_rate)
+            self.soft_q_lt.append(
+                [soft_q, soft_q_optimizer]
+            )
+    
+        self.soft_v = SoftVNet(
+            obs_dim=obs_dim,
+            hidden_dim=config.hidden_dim,
+            num_layers=config.num_layers,
+        ).to(self.device)
+        self.soft_v_optimizer = Adam(self.soft_v.parameters(), lr=config.learning_rate)
+    
+        self.target_v = SoftVNet(
+            obs_dim=obs_dim,
+            hidden_dim=config.hidden_dim,
+            num_layers=config.num_layers,
+        ).to(self.device)
+        self.target_v.load_state_dict(self.soft_v.state_dict())
+    
+    def _update_target_v(self):
+        for soft_v_param, target_v_param in zip(self.soft_v.parameters(), self.target_v.parameters()):
+            target_v_param.data = self.config.tau * soft_v_param.data + (1.0 - self.config.tau) * target_v_param.data
+    
+    @torch.no_grad
+    def estimate_q(self, obs, action):
+        q_estims = []
+        for soft_q, _ in self.soft_q_lt:
+            soft_q.eval()
+            q_estims.append(
+                soft_q(obs, action)
+            )
+            soft_q.train()
+        final_q = torch.min(*q_estims)
+        return final_q
+    
+    def _update_v(self, obs):
+        soft_v_pred = self.soft_v(obs)
+        self.soft_v_optimizer.zero_grad()
+        #ic(soft_v_pred.shape, q_pred.shape, batch_action_log_prob.shape)
+        with torch.no_grad():
+            action, action_log_prob = self.policy.sample(obs)
+            q_pred = self.estimate_q(obs, action)
+        soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.config.alpha * action_log_prob)
+        soft_v_loss.backward()
+        self.soft_v_optimizer.step()
+    
+    def _update_q(self, obs, action, reward, next_obs, done):
+        for soft_q, soft_q_optimizer in self.soft_q_lt:
+            soft_q1_pred = soft_q(obs, action)
+            target_v_out = self.target_v(next_obs).detach()
+            soft_q_optimizer.zero_grad()
+            #ic(soft_q_pred.shape, batch_reward.shape, soft_v_out.shape)
+            soft_q1_loss = F.mse_loss(soft_q1_pred, reward + (1 - done) * self.config.discount_rate * target_v_out)
+            soft_q1_loss.backward()
+            soft_q_optimizer.step()
+
+    def _update_policy(self, obs):
+        pred_action, pred_log_prob = self.policy.sample(obs)
+        soft_q_out = self.estimate_q(obs, pred_action)
+        self.policy_optimizer.zero_grad()
+        #ic(pred_log_prob.shape, soft_q_out.shape)
+        policy_loss = (self.config.alpha * pred_log_prob - soft_q_out).mean()
+        policy_loss.backward()
+        self.policy_optimizer.step()
+    
+    def param_update(self, samples):
+        if samples is None:
+            return
+        batch_obs = samples['obs'].to(self.device)
+        batch_action = samples['action'].to(self.device)
+        batch_reward = samples['reward'].to(self.device)
+        batch_next_obs = samples['next_obs'].to(self.device)
+        batch_done = samples['done'].to(self.device)
+
+        self._update_v(batch_obs)
+        self._update_q(batch_obs, batch_action, batch_reward, batch_next_obs, batch_done)
+        self._update_policy(batch_obs)
+        self._update_target_v()
+
+    @torch.no_grad
+    def eval(self):
+        eval_env = gym.make(self.config.env_name)
+        eval_env = TransformReward(eval_env, lambda r: self.config.reward_scale * r)
+
+        return_lt = []
+        for _ in range(self.config.eval_num_episodes):
+            episode_end = False
+            obs, info = eval_env.reset()
+            return_ = 0
+            step_cnt = 0
+            while not episode_end:
+                action, log_prob = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
+                action = action.squeeze().cpu().numpy()
+                log_prob = log_prob.squeeze().cpu().numpy()
+                next_obs, reward, terminated, truncated, info = eval_env.step(action)
+                obs = next_obs
+                episode_end = terminated or truncated
+
+                return_ += reward * (self.config.discount_rate ** step_cnt)
+                step_cnt += 1
+            return_lt.append(return_)
+        
+        return sum(return_lt) / len(return_lt)
+
+    def train(self):
+        global_step_cnt = 0
+        eval_expected_return = []
+        for _ in trange(self.config.num_episodes):
+            episode_end = False
+            obs, info = self.env.reset()
+            while not episode_end:
+                if self.replay_buffer.is_enough():
+                    with torch.no_grad():
+                        action, log_prob = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
+                else:
+                    action = env.action_space.sample()
+                    
+                action = action.squeeze().cpu().numpy()
+                log_prob = log_prob.squeeze().cpu().numpy()
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                episode_end = terminated or truncated
+
+                self.replay_buffer.push(
+                    torch.tensor(obs, dtype=torch.float32),
+                    torch.tensor(action, dtype=torch.float32),
+                    torch.tensor(log_prob, dtype=torch.float32),
+                    torch.tensor(next_obs, dtype=torch.float32),
+                    torch.tensor(reward, dtype=torch.float32),
+                    torch.tensor(terminated, dtype=torch.float32),
+                )
+                obs = next_obs
+
+                samples = self.replay_buffer.sample(self.config.batch_size)
+                self.param_update(samples)
+
+                global_step_cnt += 1
+                if global_step_cnt % 1000 == 0:
+                    eval_expected_return.append(self.eval())
+        return eval_expected_return
+    
+    def close(self):
+        self.env.close()
+
+def main():
+    config = TrainConfig()
+    pprint(config)
+    trainer = Trainer(config)
+    return_lt = trainer.train()
+    trainer.close()
+    return_series = pd.Series(return_lt)
+    #return_series = return_series.rolling(50).mean()
+    pprint(return_series)
+    return_series = return_series.plot.line()
+    plt.savefig('./sac-2.png')
+
+if __name__ == '__main__':
+    main()
