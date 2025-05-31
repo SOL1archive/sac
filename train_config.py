@@ -5,7 +5,8 @@ class TrainConfig:
     env_name: str = 'Walker2d-v5' # 논문에서는 v1이 사용되었으나 deprecated되어 v4 사용.
 
     alpha: float = 0.2
-    reward_scale: float = 10.
+    reward_scale: float = 1.
+    eval_steps: int = 1_000
     eval_num_episodes: int = 5
     tau: float = 0.001
     learning_rate: float = 3e-4
@@ -14,4 +15,4 @@ class TrainConfig:
     num_layers: int = 2
     hidden_dim: int = 256
     batch_size: int = 256
-    num_episodes: int = 10_000
+    num_train_steps: int = 20_000

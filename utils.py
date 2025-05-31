@@ -11,17 +11,19 @@ class ReplayBuffer:
         self._action_log_prob_buffer = torch.zeros(self.max_size, 1).to(device)
         self._trans_buffer = torch.zeros((self.max_size,) + obs_space_dim).to(device)
         self._reward_buffer = torch.zeros(self.max_size, 1).to(device)
-        self._done_buffer = torch.zeros((self.max_size, 1)).to(device)
+        self._done_buffer = torch.zeros((self.max_size, 1),  device=device)
         self._idx = 0
         self._is_enough = False
         self._current_size = 0
     
-    def push(self, obs, action, action_log_prob, trans, reward):
+    def push(self, obs, action, action_log_prob, trans, reward, done):
         self._obs_buffer[self._idx] = obs
         self._action_buffer[self._idx] = action
         self._action_log_prob_buffer[self._idx] = action_log_prob
         self._trans_buffer[self._idx] = trans
         self._reward_buffer[self._idx] = reward
+        self._done_buffer[self._idx] = done
+
         self._idx += 1
         self._current_size += 1
         self._current_size = min(self._current_size, self.max_size)
@@ -44,6 +46,7 @@ class ReplayBuffer:
             'action_log_prob': self._action_log_prob_buffer[idx],
             'next_obs': self._trans_buffer[idx],
             'reward': self._reward_buffer[idx],
+            'done': self._done_buffer[idx],
         }
 
 def get_flattened_shape(shape_object):

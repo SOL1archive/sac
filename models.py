@@ -24,8 +24,9 @@ class PolicyNet(nn.Module):
         self.mean_head = nn.Sequential(
             nn.Linear(hidden_dim, action_dim),
         )
-        self.log_std_head = nn.Sequential(
+        self.std_head = nn.Sequential(
             nn.Linear(hidden_dim, action_dim),
+            nn.Softplus(),
         )
     
     def forward(self, obs):
@@ -33,12 +34,12 @@ class PolicyNet(nn.Module):
         for module in self.backbone:
             x = module(x)
         mean = self.mean_head(x)
-        std = self.log_std_head(x)
+        std = self.std_head(x)
+
         return mean, std
     
     def sample(self, obs):
-        mean, log_std = self(obs)
-        std = torch.clamp(log_std, min=-20., max=20.).exp()
+        mean, std = self(obs)
         normal = TransformedDistribution(Normal(mean, std), self.dist_transform)
         samples = normal.rsample()
         log_prob = normal.log_prob(samples).sum(-1, keepdim=True)
