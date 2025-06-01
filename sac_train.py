@@ -34,8 +34,7 @@ class Trainer:
             config=config.__dict__,
             reinit=True,
         )
-        logger = logging.getLogger("wandb")
-        logger.setLevel(logging.ERROR)
+
         if device is not None:
             pass
         elif torch.cuda.is_available():
@@ -124,7 +123,7 @@ class Trainer:
         #ic(soft_v_pred.shape, q_pred.shape, batch_action_log_prob.shape)
         with torch.no_grad():
             self.policy.eval()
-            action, action_log_prob = self.policy.sample(obs)
+            action, action_log_prob, _ = self.policy.sample(obs)
             self.policy.train()
             q_pred = self.estimate_q(obs, action)
         soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.config.alpha * action_log_prob)
@@ -148,7 +147,7 @@ class Trainer:
         return q_losses_lt
     
     def _update_policy(self, obs):
-        pred_action, pred_log_prob = self.policy.sample(obs)
+        pred_action, pred_log_prob, (mean, std) = self.policy.sample(obs)
         soft_q_out = self.estimate_q(obs, pred_action)
         self.policy_optimizer.zero_grad()
         #ic(pred_log_prob.shape, soft_q_out.shape)
@@ -156,8 +155,11 @@ class Trainer:
         policy_loss.backward()
         self.policy_optimizer.step()
         wandb.log({
-            'train/policy_loss': policy_loss.item(), 
-            'train/mean_entropy': pred_log_prob.detach().cpu()
+            'train/policy_loss': policy_loss.item(),
+            'train/action_mean': mean,
+            'train/action_std': std,
+            'train/action_in_update': pred_action.detach().cpu(),
+            'train/entropy_in_update': pred_log_prob.detach().cpu(),
         })
         return policy_loss.item()
     
@@ -188,7 +190,7 @@ class Trainer:
             return_ = 0
             step_cnt = 0
             while not episode_end:
-                action, log_prob = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
+                action, log_prob, _ = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
                 action = action.squeeze().cpu().numpy()
                 log_prob = log_prob.squeeze().cpu().numpy()
                 next_obs, reward, terminated, truncated, info = eval_env.step(action)

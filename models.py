@@ -43,7 +43,7 @@ class PolicyNet(nn.Module):
         normal = TransformedDistribution(Normal(mean, std), self.dist_transform)
         samples = normal.rsample()
         log_prob = normal.log_prob(samples).sum(-1, keepdim=True)
-        return samples, log_prob
+        return samples, log_prob, (mean, std)
     
 class SoftQNet(nn.Module):
     def __init__(self, obs_dim, hidden_dim, num_layers, action_dim):
