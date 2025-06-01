@@ -44,7 +44,8 @@ class Trainer:
         else:
             device = torch.device('cpu')
         self.device = device
-        
+
+        self.global_step_cnt = 0
         self.env = gym.make(config.env_name, render_mode='rgb_array')
         self.env = TransformReward(self.env, lambda r: self.config.reward_scale * r)
 
@@ -97,24 +98,26 @@ class Trainer:
         for soft_v_param, target_v_param in zip(self.soft_v.parameters(), self.target_v.parameters()):
             target_v_param.data = self.config.tau * soft_v_param.data + (1.0 - self.config.tau) * target_v_param.data
     
-    @torch.no_grad
     def estimate_q(self, obs, action):
         q_estims = []
         for soft_q, _ in self.soft_q_lt:
             soft_q.eval()
+            soft_q.requires_grad_(False)
             q_estims.append(
                 soft_q(obs, action)
             )
             soft_q.train()
+            soft_q.requires_grad_(True)
         final_q = torch.min(*q_estims)
         return final_q
     
-    @torch.no_grad
     def estimate_target_v(self, obs):
         with torch.no_grad():
             self.target_v.eval()
+            self.target_v.requires_grad_(False)
             target_v_out = self.target_v(obs)
             self.target_v.train()
+            self.target_v.requires_grad_(True)
         return target_v_out
 
     def _update_v(self, obs):
@@ -129,7 +132,10 @@ class Trainer:
         soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.config.alpha * action_log_prob)
         soft_v_loss.backward()
         self.soft_v_optimizer.step()
-        wandb.log({'train/v_loss': soft_v_loss.item()})
+        wandb.log({
+            'global_steps': self.global_step_cnt, 
+            'train/v_loss': soft_v_loss.item()
+        })
         return soft_v_loss.item()
     
     def _update_q(self, obs, action, reward, next_obs, done):
@@ -143,7 +149,11 @@ class Trainer:
             q_losses_lt.append(soft_q_loss.item())
             soft_q_loss.backward()
             soft_q_optimizer.step()
-        wandb.log({'train/q1_loss': q_losses_lt[0], 'train/q2_loss': q_losses_lt[1]})
+        wandb.log({
+            'global_steps': self.global_step_cnt, 
+            'train/q1_loss': q_losses_lt[0], 
+            'train/q2_loss': q_losses_lt[1]
+        })
         return q_losses_lt
     
     def _update_policy(self, obs):
@@ -155,6 +165,7 @@ class Trainer:
         policy_loss.backward()
         self.policy_optimizer.step()
         wandb.log({
+            'global_steps': self.global_step_cnt, 
             'train/policy_loss': policy_loss.item(),
             'train/action_mean': mean,
             'train/action_std': std,
@@ -204,6 +215,7 @@ class Trainer:
             return_lt.append(return_)
         return_mean = sum(return_lt) / len(return_lt)
         wandb.log({
+            'global_steps': self.global_step_cnt, 
             'eval/sample_return': return_, 
             'eval/sample_video': wandb.Video(
                 np.stack(img_lt),
@@ -225,7 +237,7 @@ class Trainer:
             torch.tensor(log_prob, dtype=torch.float32),
             torch.tensor(next_obs, dtype=torch.float32),
             torch.tensor(reward, dtype=torch.float32),
-            torch.tensor(terminated, dtype=torch.float32),
+            torch.tensor(episode_end, dtype=torch.float32),
         )
         if episode_end:
             obs, info = self.env.reset()
@@ -234,7 +246,7 @@ class Trainer:
         return obs
 
     def train(self):
-        global_step_cnt = 0
+        self.global_step_cnt = 0
         eval_expected_return = []
         episode_end = False
         obs, info = self.env.reset()
@@ -247,7 +259,7 @@ class Trainer:
         obs, info = self.env.reset()
         for _ in trange(self.config.num_train_steps, mininterval=60.):
             with torch.no_grad():
-                action, log_prob = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
+                action, log_prob, _ = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
             action = action.squeeze().cpu().numpy()
             log_prob = log_prob.squeeze().cpu().numpy()
             obs = self.env_step(obs, action, log_prob)
@@ -255,9 +267,9 @@ class Trainer:
             samples = self.replay_buffer.sample(self.config.batch_size)
             self.param_update(samples)
 
-            global_step_cnt += 1
-            if global_step_cnt % self.config.eval_steps == 0:
+            if self.global_step_cnt % self.config.eval_steps == 0:
                 eval_expected_return.append(self.eval())
+            self.global_step_cnt += 1
         return eval_expected_return
     
     def close(self):
