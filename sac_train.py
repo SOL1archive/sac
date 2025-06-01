@@ -2,7 +2,6 @@ import logging
 
 from pprint import pprint
 from icecream import ic
-import cv2
 
 from tqdm.auto import trange
 import numpy as np
@@ -47,7 +46,7 @@ class Trainer:
             device = torch.device('cpu')
         self.device = device
         
-        self.env = gym.make(config.env_name, render_mode='rgb_array', terminate_when_unhealthy=False)
+        self.env = gym.make(config.env_name, render_mode='rgb_array')
         self.env = TransformReward(self.env, lambda r: self.config.reward_scale * r)
 
         self.replay_buffer = ReplayBuffer(
@@ -131,7 +130,7 @@ class Trainer:
         soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.config.alpha * action_log_prob)
         soft_v_loss.backward()
         self.soft_v_optimizer.step()
-        wandb.log({'v_loss': soft_v_loss.item()})
+        wandb.log({'train/v_loss': soft_v_loss.item()})
         return soft_v_loss.item()
     
     def _update_q(self, obs, action, reward, next_obs, done):
@@ -145,7 +144,7 @@ class Trainer:
             q_losses_lt.append(soft_q_loss.item())
             soft_q_loss.backward()
             soft_q_optimizer.step()
-        wandb.log({'q1_loss': q_losses_lt[0], 'q2_loss': q_losses_lt[1]})
+        wandb.log({'train/q1_loss': q_losses_lt[0], 'train/q2_loss': q_losses_lt[1]})
         return q_losses_lt
     
     def _update_policy(self, obs):
@@ -156,7 +155,10 @@ class Trainer:
         policy_loss = (self.config.alpha * pred_log_prob - soft_q_out).mean()
         policy_loss.backward()
         self.policy_optimizer.step()
-        wandb.log({'policy_loss': policy_loss.item()})
+        wandb.log({
+            'train/policy_loss': policy_loss.item(), 
+            'train/mean_entropy': pred_log_prob.detach().cpu()
+        })
         return policy_loss.item()
     
     def param_update(self, samples):
@@ -198,17 +200,19 @@ class Trainer:
                 step_cnt += 1
             
             return_lt.append(return_)
-            wandb.log({
-                'eval/return': return_, 
-                'eval/video': wandb.Video(
-                    np.stack(img_lt), 
-                    fps=16,
-                    format='mp4',
-                ),
-                'eval/len': len(img_lt),
-            })
+        return_mean = sum(return_lt) / len(return_lt)
+        wandb.log({
+            'eval/sample_return': return_, 
+            'eval/sample_video': wandb.Video(
+                np.stack(img_lt),
+                fps=16,
+                format='mp4',
+            ),
+            'eval/sample_episode_length': len(img_lt),
+            'eval/return_mean': return_mean,
+        })
         
-        return sum(return_lt) / len(return_lt)
+        return return_mean
 
     def env_step(self, obs, action, log_prob):
         next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -239,7 +243,7 @@ class Trainer:
             obs = self.env_step(obs, action, log_prob)
 
         obs, info = self.env.reset()
-        for _ in trange(self.config.num_train_steps):
+        for _ in trange(self.config.num_train_steps, mininterval=60.):
             with torch.no_grad():
                 action, log_prob = self.policy.sample(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))
             action = action.squeeze().cpu().numpy()
