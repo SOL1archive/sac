@@ -54,6 +54,7 @@ class Trainer:
             obs_space_dim=self.env.observation_space.shape,
             action_dim=self.env.action_space.shape,
             device=self.device,
+            enough_size=config.min_replay_buffer_size,
         )
         
         obs_dim = get_flattened_shape(self.env.observation_space.shape)

@@ -12,6 +12,7 @@ class TrainConfig:
     tau: float = 0.001
     learning_rate: float = 3e-4
     discount_rate: float = 0.99
+    min_replay_buffer_size: int = 1e5
     replay_buffer_size: int = 1e6
     num_layers: int = 2
     hidden_dim: int = 256
