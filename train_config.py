@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class TrainConfig:
     env_name: str = 'Walker2d-v5' # 논문에서는 v1이 사용되었으나 deprecated되어 v4 사용.
 
-    alpha: float = 0.2
+    alpha: float = 0.3
     reward_scale: float = 1.
     eval_steps: int = 50_000
     eval_num_episodes: int = 5
