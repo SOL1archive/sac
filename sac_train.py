@@ -285,7 +285,7 @@ def main():
     return_series = pd.Series(return_lt)
     pprint(return_series)
     return_series = return_series.plot.line()
-    plt.savefig('./sac-2.png')
+    #plt.savefig('./sac-2.png')
 
 if __name__ == '__main__':
     main()
