@@ -1,4 +1,5 @@
 import logging
+import os
 
 from pprint import pprint
 from icecream import ic
@@ -29,6 +30,7 @@ from models import PolicyNet, SoftQNet, SoftVNet
 class Trainer:
     def __init__(self, config: TrainConfig, device=None):
         self.config = config
+        os.environ['MUJOCO_GL'] = 'egl'
         wandb.init(
             project="sac_rl",
             config=config.__dict__,
@@ -59,6 +61,10 @@ class Trainer:
         
         obs_dim = get_flattened_shape(self.env.observation_space.shape)
         action_dim = get_flattened_shape(self.env.action_space.shape)
+
+        self.target_entropy = torch.prod(torch.tensor(self.env.action_space.shape, requires_grad=False))
+        self._log_alpha = torch.nn.Parameter(torch.tensor(self.config.alpha))
+        self.alpha_optimizer = Adam([self._log_alpha], lr=config.learning_rate)
 
         self.policy = PolicyNet(
             obs_dim=obs_dim,
@@ -120,6 +126,9 @@ class Trainer:
             self.target_v.train()
             self.target_v.requires_grad_(True)
         return target_v_out
+    
+    def get_alpha(self):
+        return F.softplus(self._log_alpha.detach())
 
     def _update_v(self, obs):
         soft_v_pred = self.soft_v(obs)
@@ -130,7 +139,7 @@ class Trainer:
             action, action_log_prob, _ = self.policy.sample(obs)
             self.policy.train()
             q_pred = self.estimate_q(obs, action)
-        soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.config.alpha * action_log_prob)
+        soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.get_alpha() * action_log_prob)
         soft_v_loss.backward()
         self.soft_v_optimizer.step()
         wandb.log({
@@ -162,7 +171,7 @@ class Trainer:
         soft_q_out = self.estimate_q(obs, pred_action)
         self.policy_optimizer.zero_grad()
         #ic(pred_log_prob.shape, soft_q_out.shape)
-        policy_loss = (self.config.alpha * pred_log_prob - soft_q_out).mean()
+        policy_loss = (self.get_alpha() * pred_log_prob - soft_q_out).mean()
         policy_loss.backward()
         self.policy_optimizer.step()
         wandb.log({
@@ -175,6 +184,20 @@ class Trainer:
         })
         return policy_loss.item()
     
+    def _update_alpha(self, obs):
+        _, pred_log_prob, _ = self.policy.sample(obs)
+        self.alpha_optimizer.zero_grad()
+        alpha = F.softplus(self._log_alpha)
+        alpha_loss = (- alpha * (pred_log_prob - self.target_entropy).detach()).mean()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        wandb.log({
+            'global_steps': self.global_step_cnt, 
+            'train/alpha': alpha.detach(),
+            'train/alpha_loss': alpha_loss.item(),
+        })
+        return alpha_loss.item()
+
     def param_update(self, samples):
         if samples is None:
             return
@@ -187,6 +210,7 @@ class Trainer:
         self._update_v(batch_obs)
         self._update_q(batch_obs, batch_action, batch_reward, batch_next_obs, batch_done)
         self._update_policy(batch_obs)
+        self._update_alpha(batch_obs)
         self._update_target_v()
 
     @torch.no_grad
