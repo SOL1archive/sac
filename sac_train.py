@@ -62,7 +62,7 @@ class Trainer:
         obs_dim = get_flattened_shape(self.env.observation_space.shape)
         action_dim = get_flattened_shape(self.env.action_space.shape)
 
-        self.target_entropy = torch.prod(torch.tensor(self.env.action_space.shape, requires_grad=False))
+        self.target_entropy = - torch.prod(torch.tensor(self.env.action_space.shape, requires_grad=False))
         self._log_alpha = torch.nn.Parameter(torch.tensor(self.config.alpha))
         self.alpha_optimizer = Adam([self._log_alpha], lr=config.learning_rate)
 
@@ -142,10 +142,11 @@ class Trainer:
         soft_v_loss = F.mse_loss(soft_v_pred, q_pred - self.get_alpha() * action_log_prob)
         soft_v_loss.backward()
         self.soft_v_optimizer.step()
-        wandb.log({
-            'global_steps': self.global_step_cnt, 
-            'train/v_loss': soft_v_loss.item()
-        })
+        if self.global_step_cnt % 1000 == 0:
+            wandb.log({
+                'global_steps': self.global_step_cnt, 
+                'train/v_loss': soft_v_loss.item(),
+            })
         return soft_v_loss.item()
     
     def _update_q(self, obs, action, reward, next_obs, done):
@@ -159,11 +160,13 @@ class Trainer:
             q_losses_lt.append(soft_q_loss.item())
             soft_q_loss.backward()
             soft_q_optimizer.step()
-        wandb.log({
-            'global_steps': self.global_step_cnt, 
-            'train/q1_loss': q_losses_lt[0], 
-            'train/q2_loss': q_losses_lt[1]
-        })
+        if self.global_step_cnt % 1000 == 0:
+            wandb.log({
+                'global_steps': self.global_step_cnt, 
+                'train/q1_loss': q_losses_lt[0], 
+                'train/q2_loss': q_losses_lt[1],
+                'train/reward': reward.mean(),
+            })
         return q_losses_lt
     
     def _update_policy(self, obs):
@@ -174,28 +177,32 @@ class Trainer:
         policy_loss = (self.get_alpha() * pred_log_prob - soft_q_out).mean()
         policy_loss.backward()
         self.policy_optimizer.step()
-        wandb.log({
-            'global_steps': self.global_step_cnt, 
-            'train/policy_loss': policy_loss.item(),
-            'train/action_mean': mean,
-            'train/action_std': std,
-            'train/action_in_update': pred_action.detach().cpu(),
-            'train/entropy_in_update': pred_log_prob.detach().cpu(),
-        })
+        if self.global_step_cnt % 1000 == 0:
+            wandb.log({
+                'global_steps': self.global_step_cnt, 
+                'train/policy_loss': policy_loss.item(),
+                'train/action_mean': mean,
+                'train/action_std': std,
+                'train/action': pred_action.detach().cpu().mean(),
+                'train/action_in_update': pred_action.detach().cpu(),
+                'train/entropy_in_update': (- pred_log_prob).detach().cpu().mean(),
+                'train/q_estim': soft_q_out.detach().cpu().mean(),
+            })
         return policy_loss.item()
     
     def _update_alpha(self, obs):
         _, pred_log_prob, _ = self.policy.sample(obs)
         self.alpha_optimizer.zero_grad()
-        alpha = F.softplus(self._log_alpha)
-        alpha_loss = (- alpha * (pred_log_prob - self.target_entropy).detach()).mean()
+        alpha_loss = (self._log_alpha * (- pred_log_prob - self.target_entropy).detach()).mean()
         alpha_loss.backward()
         self.alpha_optimizer.step()
-        wandb.log({
-            'global_steps': self.global_step_cnt, 
-            'train/alpha': alpha.detach(),
-            'train/alpha_loss': alpha_loss.item(),
-        })
+        if self.global_step_cnt % 1000 == 0:
+            alpha = F.softplus(self._log_alpha)
+            wandb.log({
+                'global_steps': self.global_step_cnt, 
+                'train/alpha': alpha.detach(),
+                'train/alpha_loss': alpha_loss.item(),
+            })
         return alpha_loss.item()
 
     def param_update(self, samples):
@@ -244,7 +251,7 @@ class Trainer:
             'eval/sample_return': return_, 
             'eval/sample_video': wandb.Video(
                 np.stack(img_lt),
-                fps=16,
+                fps=30,
                 format='mp4',
             ),
             'eval/sample_episode_length': len(img_lt),
@@ -262,7 +269,7 @@ class Trainer:
             torch.tensor(log_prob, dtype=torch.float32),
             torch.tensor(next_obs, dtype=torch.float32),
             torch.tensor(reward, dtype=torch.float32),
-            torch.tensor(episode_end, dtype=torch.float32),
+            torch.tensor(terminated, dtype=torch.float32),
         )
         if episode_end:
             obs, info = self.env.reset()

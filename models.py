@@ -18,7 +18,7 @@ class PolicyNet(nn.Module):
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
         ])
-        for _ in range(num_layers - 2):
+        for _ in range(num_layers - 1):
             self.backbone.append(nn.Linear(hidden_dim, hidden_dim))
             self.backbone.append(nn.ReLU())
         self.mean_head = nn.Sequential(
@@ -53,7 +53,7 @@ class SoftQNet(nn.Module):
             nn.Linear(obs_dim + action_dim, hidden_dim),
             nn.ReLU(),
         ])
-        for _ in range(num_layers - 2):
+        for _ in range(num_layers - 1):
             self.layers.append(nn.Linear(hidden_dim, hidden_dim))
             self.layers.append(nn.ReLU())
         self.layers.append(nn.Linear(hidden_dim, 1))
@@ -74,7 +74,7 @@ class SoftVNet(nn.Module):
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
         ])
-        for _ in range(num_layers - 2):
+        for _ in range(num_layers - 1):
             self.layers.append(nn.Linear(hidden_dim, hidden_dim))
             self.layers.append(nn.ReLU())
         self.layers.append(nn.Linear(hidden_dim, 1))

@@ -13,7 +13,7 @@ class TrainConfig:
     learning_rate: float = 3e-4
     discount_rate: float = 0.99
     replay_buffer_size: int = 1e6
-    min_replay_buffer_size: int = 1e5
+    min_replay_buffer_size: int = 1e4
     num_layers: int = 2
     hidden_dim: int = 256
     batch_size: int = 256
